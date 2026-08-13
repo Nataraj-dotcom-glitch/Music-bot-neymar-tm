@@ -1,0 +1,6 @@
+{
+  "name": "Neymar Music Bot",
+  "description": "Advanced Discord Music Bot by Dark_Alise Development featuring 100+ slash commands, Lavalink playback engine, playlists, filters, custom presence, 3-owner hierarchy, and interactive Discord controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
