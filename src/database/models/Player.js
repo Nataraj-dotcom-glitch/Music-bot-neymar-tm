@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+import mongoose from 'mongoose';
 
 const PlayerSchema = new mongoose.Schema({
   guildId: { type: String, required: true, unique: true, index: true },
@@ -14,4 +14,5 @@ const PlayerSchema = new mongoose.Schema({
   queue: { type: Array, default: [] }
 }, { timestamps: true });
 
-module.exports = mongoose.models.Player || mongoose.model('Player', PlayerSchema);
+export const PlayerModel = mongoose.models.Player || mongoose.model('Player', PlayerSchema);
+export default PlayerModel;

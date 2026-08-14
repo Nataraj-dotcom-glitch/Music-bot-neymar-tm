@@ -1,57 +1,63 @@
 /**
  * Neymar Music™ — Slash Command Deployment Script
  * Developer/Brand: Dark_Alise Development
+ * Registers commands globally across all Discord servers (or in a test guild if specified).
  */
 
 import 'dotenv/config';
 import { REST, Routes } from 'discord.js';
-import { commandsList } from './commands/index.js';
+import { commandsList, commandsMap } from './commands/index.js';
 import { BOT_NAME, DEVELOPER_NAME } from './config/index.js';
 
 export async function deployCommands() {
   const token = process.env.DISCORD_TOKEN;
   const clientId = process.env.CLIENT_ID;
-  const guildId = process.env.GUILD_ID; // Optional guild-specific deployment for instant testing
+  const developmentGuildId = process.env.DEVELOPMENT_GUILD_ID || process.env.GUILD_ID || '';
 
-  console.log(`🚀 [DEPLOY] Preparing deployment for ${BOT_NAME} (${DEVELOPER_NAME})...`);
-  console.log(`📜 Loaded ${commandsList.length} slash commands.`);
+  const uniqueCommandCount = commandsMap.size;
+
+  console.log(`\n⚡ [DEPLOY] ========================================`);
+  console.log(`⚡ [DEPLOY] Initializing Slash Command Deployment...`);
+  console.log(`⚡ [DEPLOY] Brand: ${DEVELOPER_NAME} | Bot: ${BOT_NAME}`);
+  console.log(`Loaded Slash Commands: ${uniqueCommandCount}`);
 
   if (!token || token === 'your_bot_token_here') {
-    console.warn('⚠️ [DEPLOY] DISCORD_TOKEN is missing or set to placeholder in .env. Skipping remote API push.');
-    return { success: false, reason: 'Missing DISCORD_TOKEN' };
+    console.warn('⚠️ [DEPLOY] DISCORD_TOKEN is missing or placeholder. Skipping remote Discord REST registration.');
+    return { success: false, reason: 'Missing DISCORD_TOKEN', count: uniqueCommandCount };
   }
 
   if (!clientId || clientId === 'your_client_id_here') {
-    console.warn('⚠️ [DEPLOY] CLIENT_ID is missing in .env. Skipping remote API push.');
-    return { success: false, reason: 'Missing CLIENT_ID' };
+    console.warn('⚠️ [DEPLOY] CLIENT_ID is missing in .env. Skipping remote Discord REST registration.');
+    return { success: false, reason: 'Missing CLIENT_ID', count: uniqueCommandCount };
   }
 
   const rest = new REST({ version: '10' }).setToken(token);
 
   try {
-    console.log(`📡 [DEPLOY] Registering ${commandsList.length} slash commands to Discord API...`);
-
-    let data;
-    if (guildId) {
-      // Guild specific (instant update)
-      data = await rest.put(
-        Routes.applicationGuildCommands(clientId, guildId),
+    if (developmentGuildId && developmentGuildId.trim() !== '') {
+      // Guild specific registration for development/testing
+      console.log(`📡 [DEPLOY] Registering ${uniqueCommandCount} commands to Test Guild (${developmentGuildId})...`);
+      const data = await rest.put(
+        Routes.applicationGuildCommands(clientId, developmentGuildId.trim()),
         { body: commandsList }
       );
-      console.log(`✅ [DEPLOY] Successfully deployed ${data.length} slash commands to test guild ${guildId}!`);
+      console.log(`Registered Guild Slash Commands: ${data.length}`);
+      console.log(`✅ [DEPLOY] Successfully deployed ${data.length} slash commands to development guild ${developmentGuildId}!`);
+      return { success: true, count: data.length, mode: 'guild' };
     } else {
-      // Global application commands
-      data = await rest.put(
+      // Global application command registration (Default & Production)
+      console.log(`📡 [DEPLOY] Registering ${uniqueCommandCount} global commands across all Discord guilds...`);
+      const data = await rest.put(
         Routes.applicationCommands(clientId),
         { body: commandsList }
       );
+      console.log(`Registered Global Slash Commands: ${data.length}`);
       console.log(`✅ [DEPLOY] Successfully deployed ${data.length} global slash commands across all Discord guilds!`);
+      return { success: true, count: data.length, mode: 'global' };
     }
-
-    return { success: true, count: data.length };
   } catch (error) {
     console.error('❌ [DEPLOY] Error deploying slash commands:', error);
-    return { success: false, error: error.message };
+    return { success: false, error: error.message, count: uniqueCommandCount };
   }
 }
 

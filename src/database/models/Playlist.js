@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+import mongoose from 'mongoose';
 
 const TrackSchema = new mongoose.Schema({
   title: { type: String, required: true },
@@ -19,4 +19,5 @@ const PlaylistSchema = new mongoose.Schema({
 
 PlaylistSchema.index({ ownerId: 1, name: 1 }, { unique: true });
 
-module.exports = mongoose.models.Playlist || mongoose.model('Playlist', PlaylistSchema);
+export const Playlist = mongoose.models.Playlist || mongoose.model('Playlist', PlaylistSchema);
+export default Playlist;
