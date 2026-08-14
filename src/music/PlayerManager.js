@@ -6,67 +6,104 @@
 export class Player {
   constructor(guildId) {
     this.guildId = guildId;
-    this.currentTrack = {
-      title: 'Despacito x Neymar Highlights',
-      artist: 'Luis Fonsi ft. Neymar Jr',
-      duration: 228000,
-      url: 'https://youtube.com',
-      source: 'youtube',
-      artwork: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=500&q=80',
-      requester: { id: '1353995912006860871', username: 'Dark_Alise' }
-    };
-    this.queue = {
-      tracks: [
-        { title: 'Neymar Jr Skill Compilation 2026', duration: 180000, artist: 'Neymar Skills' },
-        { title: 'Bailando Samba (Remix)', duration: 210000, artist: 'Brasil Beats' }
-      ],
-      size: 2,
-      loopMode: 'off',
-      shuffle: () => {
-        this.queue.tracks.sort(() => Math.random() - 0.5);
-      }
-    };
+    this.currentTrack = null;
+    this.queue = [];
     this.volume = 100;
     this.paused = false;
+    this.loopMode = 'off'; // 'off' | 'track' | 'queue'
     this.activeFilters = [];
+    this.twentyFourSeven = false;
+    this.autoplay = false;
   }
 
-  pause() { this.paused = true; }
-  resume() { this.paused = false; }
-  play() {
-    if (this.queue.tracks.length > 0) {
-      const next = this.queue.tracks.shift();
-      this.queue.size = this.queue.tracks.length;
-      this.currentTrack = {
-        title: next.title,
-        artist: next.artist || 'Unknown Artist',
-        duration: next.duration || 180000,
-        url: 'https://youtube.com',
-        source: 'youtube',
-        artwork: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&q=80',
-        requester: { id: '1353995912006860871', username: 'Dark_Alise' }
-      };
-    }
+  pause() {
+    this.paused = true;
   }
-  stop() {
-    this.currentTrack = null;
-    this.queue.tracks = [];
-    this.queue.size = 0;
+
+  resume() {
     this.paused = false;
   }
-  setVolume(vol) { this.volume = vol; }
+
+  skip() {
+    if (this.queue.length > 0) {
+      this.currentTrack = this.queue.shift();
+      this.paused = false;
+    } else {
+      this.currentTrack = null;
+    }
+  }
+
+  stop() {
+    this.currentTrack = null;
+    this.queue = [];
+    this.paused = false;
+    this.loopMode = 'off';
+  }
+
+  setVolume(vol) {
+    this.volume = Math.max(1, Math.min(200, vol));
+  }
+
+  shuffle() {
+    this.queue.sort(() => Math.random() - 0.5);
+  }
+
+  toggleLoop() {
+    const modes = ['off', 'track', 'queue'];
+    const nextIdx = (modes.indexOf(this.loopMode) + 1) % modes.length;
+    this.loopMode = modes[nextIdx];
+    return this.loopMode;
+  }
 }
 
-const players = new Map();
+export class PlayerManager {
+  constructor() {
+    this.players = new Map();
+  }
+
+  getOrCreatePlayer(guildId) {
+    if (!this.players.has(guildId)) {
+      this.players.set(guildId, new Player(guildId));
+    }
+    return this.players.get(guildId);
+  }
+
+  executeAction(guildId, action, value) {
+    const player = this.getOrCreatePlayer(guildId);
+    switch (action) {
+      case 'pauseToggle':
+        player.paused = !player.paused;
+        break;
+      case 'skip':
+        player.skip();
+        break;
+      case 'stop':
+        player.stop();
+        break;
+      case 'volume':
+        if (typeof value === 'number') player.setVolume(value);
+        break;
+      case 'loopToggle':
+        player.toggleLoop();
+        break;
+      case 'shuffle':
+        player.shuffle();
+        break;
+      default:
+        break;
+    }
+    return player;
+  }
+}
+
+export const playerManager = new PlayerManager();
 
 export function getPlayer(guildId) {
-  if (!players.has(guildId)) {
-    players.set(guildId, new Player(guildId));
-  }
-  return players.get(guildId);
+  return playerManager.getOrCreatePlayer(guildId);
 }
 
 export default {
+  playerManager,
   getPlayer,
-  getOrCreatePlayer: getPlayer
+  getOrCreatePlayer: (gId) => playerManager.getOrCreatePlayer(gId)
 };

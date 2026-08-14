@@ -23,6 +23,10 @@ export class LavalinkManager {
     ];
   }
 
+  init(client) {
+    console.log(`🎵 [LAVALINK] Node pool configured with host: ${LAVALINK.host}:${LAVALINK.port}`);
+  }
+
   getStats() {
     return this.nodes;
   }
@@ -57,6 +61,7 @@ export class LavalinkManager {
 export const lavalinkManager = new LavalinkManager();
 
 export default {
+  lavalinkManager,
   getStats: () => lavalinkManager.getStats(),
   getNodeStatus: () => lavalinkManager.getNodeStatus(),
   resolve: (q, s) => lavalinkManager.resolve(q, s)
