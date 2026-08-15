@@ -37,7 +37,7 @@ export async function execute(interaction, client) {
     }
 
     // Owner command restriction check
-    if (commandName.startsWith('owner-')) {
+    if (commandName === 'owner' || commandName.startsWith('owner-')) {
       if (!isOwner(user.id)) {
         return interaction.reply({
           content: '👑 **Access Denied:** This command is restricted strictly to designated **Neymar Music™ Bot Owners**.',
@@ -47,7 +47,7 @@ export async function execute(interaction, client) {
     }
 
     // Developer command restriction check
-    if (commandName.startsWith('developer-')) {
+    if (commandName === 'developer' || commandName.startsWith('developer-')) {
       if (!isOwner(user.id) && !isDeveloper(user.id)) {
         return interaction.reply({
           content: '🛠️ **Access Denied:** This command is restricted to **Dark_Alise Development** team members.',

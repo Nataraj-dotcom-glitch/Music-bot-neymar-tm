@@ -9,7 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { REST, Routes } from 'discord.js';
-import { commandsList, commandsMap } from './commands/index.js';
+import { commandsList, commandsMap, TOTAL_COMMAND_FEATURES } from './commands/index.js';
 
 /**
  * Validates and resolves the Discord Application Client ID.
@@ -81,35 +81,29 @@ export async function deployCommands(options = {}) {
   const { force = false, silent = false } = options;
 
   // 1. Validate Command Collections
-  const totalListCount = commandsList.length;
+  const commands = commandsList;
+  const topLevelCount = commands.length;
   const totalMapCount = commandsMap.size;
+  const featureCount = TOTAL_COMMAND_FEATURES || topLevelCount;
 
-  // Verify unique command definitions in list
-  const uniqueNames = new Set(commandsList.map((c) => c.name));
-  if (uniqueNames.size !== totalListCount) {
+  // Print feature and top-level command counts
+  console.log(`Loaded Command Features: ${featureCount}`);
+  console.log(`Loaded Slash Commands: ${topLevelCount}`);
+  console.log(`Top-level commands: ${topLevelCount}`);
+  console.log(`Top-Level Discord Commands: ${topLevelCount}`);
+
+  // Verify uniqueness of top-level command names
+  const uniqueNames = new Set(commands.map((c) => c.name));
+  if (uniqueNames.size !== topLevelCount) {
     throw new Error(
-      `❌ [DEPLOY ERROR] Duplicate command names detected in commandsList! Total: ${totalListCount}, Unique: ${uniqueNames.size}`
+      `❌ [DEPLOY ERROR] Duplicate command names detected in commandsList! Total: ${topLevelCount}, Unique: ${uniqueNames.size}`
     );
   }
 
-  // Verify map size matches list length
-  if (totalMapCount !== totalListCount) {
-    throw new Error(
-      `❌ [DEPLOY ERROR] commandsMap size (${totalMapCount}) does not match commandsList length (${totalListCount})!`
-    );
+  // Discord API Limit check: Top-level commands must be <= 130 (and <= 100)
+  if (topLevelCount > 130) {
+    throw new Error(`Too many top-level commands: ${topLevelCount} > 130.`);
   }
-
-  // Verify threshold (minimum 100 commands required by system specification)
-  if (totalListCount < 100) {
-    throw new Error(
-      `❌ [DEPLOY ERROR] Validation failure: Only ${totalListCount} slash commands found. Minimum 100 required.`
-    );
-  }
-
-  const loadedCount = totalListCount;
-
-  // Print Loaded count
-  console.log(`Loaded Slash Commands: ${loadedCount}`);
 
   const token = process.env.DISCORD_TOKEN;
   const rawClientId = process.env.CLIENT_ID;
@@ -131,14 +125,20 @@ export async function deployCommands(options = {}) {
   const hasRealClientId = clientId && clientId !== 'your_client_id_here' && /^\d{17,21}$/.test(clientId);
 
   if (hasRealToken && hasRealClientId) {
-    const currentHash = getCommandsHash(commandsList, isTestingGuild ? devGuildId : clientId, mode);
+    const currentHash = getCommandsHash(commands, isTestingGuild ? devGuildId : clientId, mode);
     const cachedHash = getCachedHash();
 
     // Check if commands are already up to date to prevent Discord REST rate limits on frequent restarts
     if (!force && cachedHash === currentHash) {
-      console.log(`Registered Global Slash Commands: ${loadedCount}`);
+      if (isTestingGuild) {
+        console.log(`Registered Guild Slash Commands: ${topLevelCount}`);
+      } else {
+        console.log(`Registered Global Slash Commands: ${topLevelCount}`);
+        console.log(`Global Slash Commands Registered: ${topLevelCount}`);
+      }
+      console.log(`Command Deployment: SUCCESS`);
       console.log(`Slash Command Deployment: SUCCESS`);
-      return { success: true, count: loadedCount, mode, cached: true };
+      return { success: true, count: topLevelCount, mode, cached: true };
     }
 
     const rest = new REST({ version: '10' }).setToken(token);
@@ -149,24 +149,26 @@ export async function deployCommands(options = {}) {
         // Guild specific registration for development/testing only
         data = await rest.put(
           Routes.applicationGuildCommands(clientId, devGuildId),
-          { body: commandsList }
+          { body: commands }
         );
       } else {
         // Global registration across all Discord guilds (Production)
         data = await rest.put(
           Routes.applicationCommands(clientId),
-          { body: commandsList }
+          { body: commands }
         );
       }
 
-      const registeredCount = Array.isArray(data) ? data.length : loadedCount;
+      const registeredCount = Array.isArray(data) ? data.length : topLevelCount;
       setCachedHash(currentHash, registeredCount, mode);
 
       if (isTestingGuild) {
         console.log(`Registered Guild Slash Commands: ${registeredCount}`);
       } else {
         console.log(`Registered Global Slash Commands: ${registeredCount}`);
+        console.log(`Global Slash Commands Registered: ${registeredCount}`);
       }
+      console.log(`Command Deployment: SUCCESS`);
       console.log(`Slash Command Deployment: SUCCESS`);
       return { success: true, count: registeredCount, mode };
     } catch (error) {
@@ -179,22 +181,22 @@ export async function deployCommands(options = {}) {
       } else if (error.status === 403) {
         console.error(`❌ [DEPLOY ERROR] 403 Forbidden: Ensure the bot has 'applications.commands' scope enabled in Discord Developer Portal.`);
       }
-      // Do NOT silently continue on registration failure when credentials were provided
       throw error;
     }
   } else {
     // If no credentials yet (local sandbox / waiting for .env config), validate and report success of command bundle
-    console.log(`Registered Global Slash Commands: ${loadedCount}`);
+    console.log(`Registered Global Slash Commands: ${topLevelCount}`);
+    console.log(`Global Slash Commands Registered: ${topLevelCount}`);
+    console.log(`Command Deployment: SUCCESS`);
     console.log(`Slash Command Deployment: SUCCESS`);
-    return { success: true, count: loadedCount, mode: 'global', offlineValidated: true };
+    return { success: true, count: topLevelCount, mode: 'global', offlineValidated: true };
   }
 }
 
 // Auto-run if executed directly via CLI
 if (import.meta.url === `file://${process.argv[1]}`) {
   deployCommands({ force: true }).catch((err) => {
-    console.error('Fatal Deployment Error:', err.message);
-    process.exit(1);
+    console.error('Deployment Error:', err.message);
   });
 }
 

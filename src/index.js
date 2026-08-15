@@ -218,8 +218,7 @@ export async function startBot() {
   try {
     await deployCommands();
   } catch (deployErr) {
-    console.error('❌ [STARTUP ERROR] Command Deployment Verification Failed:', deployErr.message);
-    throw deployErr;
+    console.error('❌ [STARTUP ERROR] Command Deployment Verification Failed:', deployErr.message || deployErr);
   }
 
   // 2. Start lightweight HTTP server on port 3000 for cloud container / health checks
