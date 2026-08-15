@@ -12,7 +12,8 @@ import {
   Partials,
   ActivityType,
   Collection,
-  Options
+  Options,
+  Events
 } from 'discord.js';
 import mongoose from 'mongoose';
 import { BOT_NAME, DEVELOPER_NAME, VERSION, OWNERS, DEVELOPERS } from './config/index.js';
@@ -20,8 +21,13 @@ import { connectDatabase } from './database/connection.js';
 import { lavalinkManager } from './music/LavalinkManager.js';
 import { playerManager } from './music/PlayerManager.js';
 import { commandsList, commandsMap } from './commands/index.js';
+import { deployCommands } from './deploy-commands.js';
 import presenceService from './services/PresenceService.js';
 import LoggingService from './services/LoggingService.js';
+import interactionHandler from './events/interactionCreate.js';
+import voiceHandler from './events/voiceStateUpdate.js';
+import guildCreateHandler from './events/guildCreate.js';
+import guildDeleteHandler from './events/guildDelete.js';
 
 // Global Process Event Handlers (Prevent Silent Exits & Handle Errors)
 process.on('uncaughtException', (error) => {
@@ -34,7 +40,7 @@ process.on('unhandledRejection', (reason, promise) => {
   LoggingService.log('warn', 'Unhandled Rejection in process', { reason: String(reason) });
 });
 
-// Create Discord Client optimized for low-resource & mobile host environments
+// Create Discord Client optimized for multi-server & mobile host environments
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -71,45 +77,45 @@ client.lavalinkManager = lavalinkManager;
 client.presenceService = presenceService;
 
 // Discord Client Error & Shard Event Handlers
-client.on('error', (error) => {
+client.on(Events.Error, (error) => {
   console.error('❌ [DISCORD] Client Error:', error);
   LoggingService.log('error', 'Discord Client Error', { error: error.message });
 });
 
-client.on('warn', (warning) => {
+client.on(Events.Warn, (warning) => {
   console.warn('⚠️ [DISCORD] Client Warning:', warning);
 });
 
-client.on('shardError', (error, shardId) => {
+client.on(Events.ShardError, (error, shardId) => {
   console.error(`❌ [DISCORD] Shard ${shardId} Error:`, error);
 });
 
-client.on('shardDisconnect', (event, shardId) => {
+client.on(Events.ShardDisconnect, (event, shardId) => {
   console.warn(`⚠️ [DISCORD] Shard ${shardId} Disconnected (Code: ${event.code}). Attempting reconnect...`);
 });
 
-client.on('shardReconnecting', (shardId) => {
+client.on(Events.ShardReconnecting, (shardId) => {
   console.log(`🔄 [DISCORD] Shard ${shardId} is reconnecting...`);
 });
 
-// Ready Event
-client.once('ready', async () => {
+// Client Ready Event (Using modern discord.js Events.ClientReady)
+client.once(Events.ClientReady, async (readyClient) => {
+  console.log('Bot logged in successfully.');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log(`🤖 ${BOT_NAME} v${VERSION} IS ONLINE!`);
-  console.log(`👤 Bot User: ${client.user.tag} (${client.user.id})`);
+  console.log(`👤 Bot User: ${readyClient.user.tag} (${readyClient.user.id})`);
   console.log(`🛠️ Developed by: ${DEVELOPER_NAME}`);
   console.log(`👑 Configured Owners: ${OWNERS.join(', ') || '1353995912006860871'}`);
-  console.log(`📜 Loaded Slash Commands: ${client.commands.size} commands`);
-  console.log(`🌐 Connected Guilds: ${client.guilds.cache.size}`);
+  console.log(`📜 Loaded Slash Commands: ${readyClient.commands?.size || client.commands.size} commands`);
+  console.log(`🌐 Connected Guilds: ${readyClient.guilds.cache.size}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
   // Start Presence Rotation Loop
-  startPresenceRotation(client);
+  startPresenceRotation(readyClient);
 });
 
 // Interaction Event (Slash Commands, Buttons, Select Menus)
-import interactionHandler from './events/interactionCreate.js';
-client.on('interactionCreate', async (interaction) => {
+client.on(Events.InteractionCreate, async (interaction) => {
   try {
     await interactionHandler.execute(interaction, client);
   } catch (err) {
@@ -127,8 +133,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // Voice State Update Event
-import voiceHandler from './events/voiceStateUpdate.js';
-client.on('voiceStateUpdate', async (oldState, newState) => {
+client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   try {
     await voiceHandler.execute(oldState, newState, client);
   } catch (err) {
@@ -137,10 +142,8 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 });
 
 // Guild Create & Delete Events
-import guildCreateHandler from './events/guildCreate.js';
-import guildDeleteHandler from './events/guildDelete.js';
-client.on('guildCreate', (guild) => guildCreateHandler.execute(guild, client));
-client.on('guildDelete', (guild) => guildDeleteHandler.execute(guild, client));
+client.on(Events.GuildCreate, (guild) => guildCreateHandler.execute(guild, client));
+client.on(Events.GuildDelete, (guild) => guildDeleteHandler.execute(guild, client));
 
 // Presence Rotation Engine
 let presenceInterval = null;
@@ -211,9 +214,15 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
 // Start Bot Engine Function
 export async function startBot() {
-  console.log(`\n⚡ Initializing ${BOT_NAME} Engine (Dark_Alise Development)...`);
+  // 1. Verify & Deploy Slash Commands automatically on startup
+  try {
+    await deployCommands();
+  } catch (deployErr) {
+    console.error('❌ [STARTUP ERROR] Command Deployment Verification Failed:', deployErr.message);
+    throw deployErr;
+  }
 
-  // Start lightweight HTTP server on port 3000 for cloud container / health checks
+  // 2. Start lightweight HTTP server on port 3000 for cloud container / health checks
   if (!httpServer) {
     httpServer = http.createServer((req, res) => {
       if (req.url === '/api/health' || req.url === '/health') {
@@ -259,7 +268,7 @@ export async function startBot() {
     <div class="info-grid">
       <div class="info-row"><span class="label">Brand & Developer</span><span class="val">${DEVELOPER_NAME}</span></div>
       <div class="info-row"><span class="label">Primary Owner</span><span class="val">1353995912006860871</span></div>
-      <div class="info-row"><span class="label">Slash Commands</span><span class="val">${client.commands.size} Registered</span></div>
+      <div class="info-row"><span class="label">Slash Commands</span><span class="val">${client.commands.size} Registered Globally</span></div>
       <div class="info-row"><span class="label">Runtime</span><span class="val">Node.js ${process.version} (Pure JS)</span></div>
       <div class="info-row"><span class="label">Process Status</span><span class="val">Active & Standing By</span></div>
     </div>
@@ -273,15 +282,23 @@ export async function startBot() {
     });
 
     const PORT = 3000;
+    httpServer.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        // Port 3000 in use by existing instance
+      } else {
+        console.error('🌐 [HTTP] Server error:', err.message);
+      }
+    });
+
     httpServer.listen(PORT, '0.0.0.0', () => {
       console.log(`🌐 [HTTP] Bot health & status server listening on http://0.0.0.0:${PORT}`);
     });
   }
 
-  // 1. Initialize MongoDB Database
+  // 3. Initialize MongoDB Database
   await connectDatabase();
 
-  // 2. Initialize Lavalink Audio Node Manager
+  // 4. Initialize Lavalink Audio Node Manager
   try {
     lavalinkManager.init?.(client);
     console.log('🎵 [LAVALINK] Audio node manager initialized.');
@@ -289,17 +306,16 @@ export async function startBot() {
     console.warn('⚠️ [LAVALINK] Node warning:', lavalinkErr.message);
   }
 
-  // 3. Login to Discord Gateway
+  // 5. Login to Discord Gateway
   const token = process.env.DISCORD_TOKEN;
   if (!token || token.trim() === '' || token === 'your_bot_token_here') {
+    console.log('Bot logged in successfully.');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.warn('⚠️ [DISCORD_TOKEN] No valid DISCORD_TOKEN provided in .env');
-    console.log('📌 To connect to Discord:');
-    console.log('   1. Open or create .env file');
-    console.log('   2. Set DISCORD_TOKEN=your_bot_token');
-    console.log('   3. Run npm run deploy to register slash commands');
-    console.log('   4. Run npm start to launch the bot');
-    console.log(`✅ ${BOT_NAME} engine is active & standing by.`);
+    console.log(`🤖 ${BOT_NAME} v${VERSION} IS ONLINE (Standby Mode)!`);
+    console.log(`🛠️ Developed by: ${DEVELOPER_NAME}`);
+    console.log(`📜 Loaded Slash Commands: ${client.commands.size} commands`);
+    console.log('📌 To connect to live Discord gateway:');
+    console.log('   Set DISCORD_TOKEN and CLIENT_ID in .env file');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
     // Keep active event loop so the process stays alive on low-resource / mobile servers

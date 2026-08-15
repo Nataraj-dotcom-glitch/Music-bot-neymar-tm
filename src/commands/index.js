@@ -1649,7 +1649,7 @@ register(
 register(
   new SlashCommandBuilder().setName('invite').setDescription('Invite Neymar Music™ to your server'),
   async (interaction, client) => {
-    const id = client.user?.id || 'your_bot_id';
+    const id = client?.user?.id || process.env.CLIENT_ID || 'your_bot_id';
     return interaction.reply({
       content: `🔗 **Invite Link:** [Click here to add ${BOT_NAME}](https://discord.com/api/oauth2/authorize?client_id=${id}&permissions=8&scope=bot%20applications.commands)`
     });
