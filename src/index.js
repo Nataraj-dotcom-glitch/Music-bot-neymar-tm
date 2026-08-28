@@ -254,8 +254,10 @@ export async function startBot() {
   // 3. Initialize MongoDB Database
   await connectDatabase();
 
-  // 4. Initialize Lavalink Audio Node Manager
+  // 4. Initialize Lavalink Audio Node Manager & Voice Watchdog
   try {
+    voiceManager.setClient(client);
+    voiceManager.start247Watchdog(client, playerManager);
     await lavalinkManager.init(client, playerManager);
   } catch (lavalinkErr) {
     console.warn('⚠️ [LAVALINK] Node initialization warning:', lavalinkErr.message);

@@ -567,6 +567,54 @@ registerTopLevel(
 );
 
 registerTopLevel(
+  new SlashCommandBuilder().setName('247').setDescription('Toggle 24/7 continuous voice channel stay mode'),
+  async (interaction) => {
+    const player = playerManager.getOrCreatePlayer(interaction.guildId);
+    const memberVoice = interaction.member?.voice?.channel;
+
+    player.mode247 = !player.mode247;
+    player.twentyFourSeven = player.mode247;
+
+    if (player.mode247 && memberVoice) {
+      player.voiceChannelId = memberVoice.id;
+      player.textChannelId = interaction.channelId;
+      try {
+        await voiceManager.joinVoice(memberVoice);
+      } catch {}
+    }
+
+    await GuildSettingsService.updateSettings(interaction.guildId, { mode247: player.mode247 });
+    return interaction.reply({
+      content: `🔒 **24/7 Stay Mode:** ${player.mode247 ? '🟢 **ENABLED** (Bot will remain in voice channel 24/7 forever)' : '🔴 **DISABLED** (Bot will leave when empty)'}`
+    });
+  }
+);
+
+registerTopLevel(
+  new SlashCommandBuilder().setName('stay').setDescription('Lock Neymar Music™ in the current voice channel 24/7'),
+  async (interaction) => {
+    const player = playerManager.getOrCreatePlayer(interaction.guildId);
+    const memberVoice = interaction.member?.voice?.channel;
+
+    player.mode247 = true;
+    player.twentyFourSeven = true;
+
+    if (memberVoice) {
+      player.voiceChannelId = memberVoice.id;
+      player.textChannelId = interaction.channelId;
+      try {
+        await voiceManager.joinVoice(memberVoice);
+      } catch {}
+    }
+
+    await GuildSettingsService.updateSettings(interaction.guildId, { mode247: true });
+    return interaction.reply({
+      content: '🔒 Voice channel locked in **24/7 Stay Mode**. Bot will stay connected indefinitely.'
+    });
+  }
+);
+
+registerTopLevel(
   new SlashCommandBuilder().setName('shuffle').setDescription('Shuffle all upcoming tracks in the queue'),
   async (interaction) => {
     const player = playerManager.getOrCreatePlayer(interaction.guildId);
@@ -1433,7 +1481,18 @@ registerTopLevel(
   {
     '247': async (interaction) => {
       const player = playerManager.getOrCreatePlayer(interaction.guildId);
+      const memberVoice = interaction.member?.voice?.channel;
       player.mode247 = !player.mode247;
+      player.twentyFourSeven = player.mode247;
+
+      if (player.mode247 && memberVoice) {
+        player.voiceChannelId = memberVoice.id;
+        player.textChannelId = interaction.channelId;
+        try {
+          await voiceManager.joinVoice(memberVoice);
+        } catch {}
+      }
+
       await GuildSettingsService.updateSettings(interaction.guildId, { mode247: player.mode247 });
       return interaction.reply({
         content: `🔒 **24/7 Mode:** ${player.mode247 ? '🟢 **ENABLED** (Bot will remain in voice forever)' : '🔴 **DISABLED** (Bot will leave on idle)'}`
@@ -1441,8 +1500,20 @@ registerTopLevel(
     },
     stay: async (interaction) => {
       const player = playerManager.getOrCreatePlayer(interaction.guildId);
+      const memberVoice = interaction.member?.voice?.channel;
       player.mode247 = true;
-      return interaction.reply({ content: '🔒 Voice channel locked in **24/7 Stay Mode**.' });
+      player.twentyFourSeven = true;
+
+      if (memberVoice) {
+        player.voiceChannelId = memberVoice.id;
+        player.textChannelId = interaction.channelId;
+        try {
+          await voiceManager.joinVoice(memberVoice);
+        } catch {}
+      }
+
+      await GuildSettingsService.updateSettings(interaction.guildId, { mode247: true });
+      return interaction.reply({ content: '🔒 Voice channel locked in **24/7 Stay Mode**. Bot will remain in voice forever.' });
     },
     status: async (interaction) => {
       const player = playerManager.getOrCreatePlayer(interaction.guildId);
