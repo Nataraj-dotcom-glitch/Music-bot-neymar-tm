@@ -12,8 +12,10 @@
     "deploy": "node src/deploy-commands.js"
   },
   "dependencies": {
+    "@discordjs/voice": "^0.19.2",
     "discord.js": "^14.17.3",
     "dotenv": "^16.4.7",
-    "mongoose": "^8.10.0"
+    "mongoose": "^8.10.0",
+    "ws": "^8.21.3"
   }
 }

@@ -20,6 +20,7 @@ import { BOT_NAME, DEVELOPER_NAME, VERSION, OWNERS, DEVELOPERS } from './config/
 import { connectDatabase } from './database/connection.js';
 import { lavalinkManager } from './music/LavalinkManager.js';
 import { playerManager } from './music/PlayerManager.js';
+import { voiceManager } from './music/VoiceManager.js';
 import { commandsList, commandsMap } from './commands/index.js';
 import { deployCommands } from './deploy-commands.js';
 import presenceService from './services/PresenceService.js';
@@ -28,6 +29,7 @@ import interactionHandler from './events/interactionCreate.js';
 import voiceHandler from './events/voiceStateUpdate.js';
 import guildCreateHandler from './events/guildCreate.js';
 import guildDeleteHandler from './events/guildDelete.js';
+import { createDashboardServer } from './web/dashboard.js';
 
 // Global Process Event Handlers (Prevent Silent Exits & Handle Errors)
 process.on('uncaughtException', (error) => {
@@ -74,7 +76,17 @@ commandsList.forEach((cmd) => {
 
 client.playerManager = playerManager;
 client.lavalinkManager = lavalinkManager;
+client.voiceManager = voiceManager;
 client.presenceService = presenceService;
+
+// Forward Raw Voice Packets to Lavalink for direct Discord voice streaming
+client.on('raw', (packet) => {
+  if (packet.t === 'VOICE_SERVER_UPDATE' || packet.t === 'VOICE_STATE_UPDATE') {
+    lavalinkManager.handleVoiceUpdate(packet).catch((err) => {
+      console.error('[LAVALINK ERROR] Voice packet handling exception:', err.message);
+    });
+  }
+});
 
 // Discord Client Error & Shard Event Handlers
 client.on(Events.Error, (error) => {
@@ -221,64 +233,9 @@ export async function startBot() {
     console.error('❌ [STARTUP ERROR] Command Deployment Verification Failed:', deployErr.message || deployErr);
   }
 
-  // 2. Start lightweight HTTP server on port 3000 for cloud container / health checks
+  // 2. Start HTTP dashboard & API server on port 3000 for web UI & health checks
   if (!httpServer) {
-    httpServer = http.createServer((req, res) => {
-      if (req.url === '/api/health' || req.url === '/health') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          status: 'online',
-          bot: BOT_NAME,
-          brand: DEVELOPER_NAME,
-          version: VERSION,
-          commands: client.commands.size,
-          uptime: process.uptime()
-        }));
-        return;
-      }
-
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${BOT_NAME} — Pure JavaScript Discord Bot</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0b0e14; color: #f1f5f9; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
-    .card { background: #131b26; border: 1px solid #1e293b; border-radius: 12px; padding: 28px; max-width: 520px; width: 100%; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
-    .badge { display: inline-block; padding: 4px 10px; background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 6px; font-size: 13px; font-weight: 600; margin-bottom: 16px; }
-    h1 { margin: 0 0 8px 0; font-size: 24px; color: #ffffff; }
-    p { margin: 0 0 16px 0; color: #94a3b8; font-size: 14px; line-height: 1.5; }
-    .info-grid { background: #0d131d; border-radius: 8px; padding: 14px; margin-bottom: 18px; display: grid; gap: 8px; font-size: 13px; }
-    .info-row { display: flex; justify-content: space-between; border-bottom: 1px solid #1e293b; padding-bottom: 6px; }
-    .info-row:last-child { border-bottom: none; padding-bottom: 0; }
-    .label { color: #64748b; }
-    .val { color: #38bdf8; font-family: monospace; font-weight: 600; }
-    .footer { font-size: 12px; color: #64748b; text-align: center; margin-top: 10px; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="badge">🟢 Bot Engine Running</div>
-    <h1>${BOT_NAME} v${VERSION}</h1>
-    <p>Pure JavaScript Discord Music Bot powered by <strong>discord.js v14</strong>, MongoDB/Mongoose, and Lavalink.</p>
-    
-    <div class="info-grid">
-      <div class="info-row"><span class="label">Brand & Developer</span><span class="val">${DEVELOPER_NAME}</span></div>
-      <div class="info-row"><span class="label">Primary Owner</span><span class="val">1353995912006860871</span></div>
-      <div class="info-row"><span class="label">Slash Commands</span><span class="val">${client.commands.size} Registered Globally</span></div>
-      <div class="info-row"><span class="label">Runtime</span><span class="val">Node.js ${process.version} (Pure JS)</span></div>
-      <div class="info-row"><span class="label">Process Status</span><span class="val">Active & Standing By</span></div>
-    </div>
-
-    <div class="footer">
-      Dark_Alise Development • Low-Resource & Mobile Host Ready
-    </div>
-  </div>
-</body>
-</html>`);
-    });
+    httpServer = createDashboardServer(client);
 
     const PORT = 3000;
     httpServer.on('error', (err) => {
@@ -290,7 +247,7 @@ export async function startBot() {
     });
 
     httpServer.listen(PORT, '0.0.0.0', () => {
-      console.log(`🌐 [HTTP] Bot health & status server listening on http://0.0.0.0:${PORT}`);
+      console.log(`🌐 [HTTP] Bot health & dashboard server listening on http://0.0.0.0:${PORT}`);
     });
   }
 
@@ -299,10 +256,9 @@ export async function startBot() {
 
   // 4. Initialize Lavalink Audio Node Manager
   try {
-    lavalinkManager.init?.(client);
-    console.log('🎵 [LAVALINK] Audio node manager initialized.');
+    await lavalinkManager.init(client, playerManager);
   } catch (lavalinkErr) {
-    console.warn('⚠️ [LAVALINK] Node warning:', lavalinkErr.message);
+    console.warn('⚠️ [LAVALINK] Node initialization warning:', lavalinkErr.message);
   }
 
   // 5. Login to Discord Gateway

@@ -26,6 +26,7 @@ import {
 } from '../config/index.js';
 import { playerManager } from '../music/PlayerManager.js';
 import { lavalinkManager } from '../music/LavalinkManager.js';
+import { voiceManager } from '../music/VoiceManager.js';
 import { createNowPlayingEmbed, createMusicPanelEmbed, createQueueEmbed } from '../utils/embeds.js';
 import { formatDuration } from '../utils/formatters.js';
 import { isOwner } from '../config/owners.js';
@@ -36,20 +37,6 @@ import PlaylistService from '../services/PlaylistService.js';
 import GuildSettingsService from '../services/GuildSettingsService.js';
 import FavoriteService from '../services/FavoriteService.js';
 import LoggingService from '../services/LoggingService.js';
-
-// Helper to resolve track
-function resolveTrack(query, user) {
-  const isUrl = typeof query === 'string' && (query.startsWith('http://') || query.startsWith('https://'));
-  return {
-    title: isUrl ? 'Audio Stream Track' : query,
-    artist: 'Neymar Music Artist',
-    duration: 228000,
-    url: isUrl ? query : `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
-    source: isUrl ? 'stream' : 'youtube',
-    artwork: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=500&q=80',
-    requester: { id: user.id, username: user.username }
-  };
-}
 
 // Track Total Features Count (Top-level singles + Subcommands)
 let totalFeatureCount = 0;
@@ -123,6 +110,24 @@ registerTopLevel(
     const query = interaction.options.getString('query');
     const { user, guildId } = interaction;
 
+    // 1. Voice channel requirement check
+    const memberVoice = interaction.member?.voice?.channel;
+    if (!memberVoice) {
+      return interaction.reply({
+        content: '🔊 You must be in a voice channel to use `/play`.',
+        ephemeral: true
+      });
+    }
+
+    // 2. Lavalink node availability check
+    if (!lavalinkManager.connected) {
+      return interaction.reply({
+        content: '❌ Music node is currently unavailable.',
+        ephemeral: true
+      });
+    }
+
+    // 3. Rate/Free limit check
     const limitCheck = PremiumService.checkRequestLimit(user.id);
     if (!limitCheck.allowed) {
       return interaction.reply({
@@ -131,25 +136,86 @@ registerTopLevel(
       });
     }
 
+    await interaction.deferReply();
+
+    // 4. Connect to voice channel using real @discordjs/voice connection
+    try {
+      await voiceManager.joinVoice(memberVoice);
+    } catch (voiceErr) {
+      return interaction.editReply({
+        content: voiceErr.message?.startsWith('❌') ? voiceErr.message : `❌ Failed to join voice channel: ${voiceErr.message}`
+      });
+    }
+
     const player = playerManager.getOrCreatePlayer(guildId);
-    const track = resolveTrack(query, user);
-    player.play(track);
+    player.voiceChannelId = memberVoice.id;
+    player.textChannelId = interaction.channelId;
+
+    // 5. Resolve real track via Lavalink
+    let result;
+    try {
+      result = await lavalinkManager.resolve(query, user);
+    } catch (err) {
+      return interaction.editReply({
+        content: `❌ Could not resolve audio track: ${err.message}`
+      });
+    }
+
+    if (!result || !result.tracks || result.tracks.length === 0) {
+      return interaction.editReply({
+        content: `❌ No tracks found for \`${query}\`.`
+      });
+    }
+
+    // 6. Handle Playlist vs Single Track
+    if (result.loadType === 'PLAYLIST_LOADED') {
+      const isInitial = !player.currentTrack;
+      for (const t of result.tracks) {
+        await player.play(t);
+      }
+      FavoriteService.recordHistory(user.id, guildId, result.tracks[0]);
+      PremiumService.incrementRequest(user.id);
+
+      const playlistTitle = result.playlistInfo?.name || 'Playlist';
+      const embed = new EmbedBuilder()
+        .setColor(EMBED_COLOR)
+        .setAuthor({ name: '📑 Playlist Queued', iconURL: 'https://cdn-icons-png.flaticon.com/512/3844/3844724.png' })
+        .setTitle(playlistTitle)
+        .setDescription(
+          `**Tracks Added:** \`${result.tracks.length}\` songs\n` +
+          `**Requested By:** <@${user.id}>\n` +
+          `**Status:** ${isInitial ? '▶️ Now Playing' : '⏳ Added to Queue'}`
+        )
+        .setFooter({ text: `${DEVELOPER_NAME} • Neymar Music™` });
+
+      return interaction.editReply({ embeds: [embed] });
+    }
+
+    // Single Track
+    const track = result.tracks[0];
+    const isNowPlaying = !player.currentTrack;
+    await player.play(track);
     FavoriteService.recordHistory(user.id, guildId, track);
     PremiumService.incrementRequest(user.id);
 
     const embed = new EmbedBuilder()
       .setColor(EMBED_COLOR)
-      .setAuthor({ name: '🎵 Added to Queue', iconURL: 'https://cdn-icons-png.flaticon.com/512/3844/3844724.png' })
+      .setAuthor({
+        name: isNowPlaying ? '▶️ Now Playing' : '🎵 Added to Queue',
+        iconURL: 'https://cdn-icons-png.flaticon.com/512/3844/3844724.png'
+      })
       .setTitle(track.title)
       .setURL(track.url)
+      .setThumbnail(track.artwork)
       .setDescription(
+        `**Artist / Author:** \`${track.artist}\`\n` +
         `**Duration:** \`${formatDuration(track.duration)}\`\n` +
         `**Requested By:** <@${user.id}>\n` +
         `**Position in Queue:** \`#${player.queue.length + (player.currentTrack === track ? 0 : 1)}\``
       )
       .setFooter({ text: `${DEVELOPER_NAME} • Neymar Music™` });
 
-    return interaction.reply({ embeds: [embed] });
+    return interaction.editReply({ embeds: [embed] });
   }
 );
 
@@ -160,12 +226,38 @@ registerTopLevel(
     .addStringOption(opt => opt.setName('query').setDescription('Song keywords to search').setRequired(true)),
   async (interaction) => {
     const query = interaction.options.getString('query');
+    const memberVoice = interaction.member?.voice?.channel;
+    if (!memberVoice) {
+      return interaction.reply({ content: '🔊 You must be in a voice channel to search and play tracks.', ephemeral: true });
+    }
+    if (!lavalinkManager.connected) {
+      return interaction.reply({ content: '❌ Music node is currently unavailable.', ephemeral: true });
+    }
+
+    await interaction.deferReply();
+    try {
+      await voiceManager.joinVoice(memberVoice);
+    } catch (voiceErr) {
+      return interaction.editReply({ content: voiceErr.message?.startsWith('❌') ? voiceErr.message : `❌ Failed to join voice channel: ${voiceErr.message}` });
+    }
+
     const player = playerManager.getOrCreatePlayer(interaction.guildId);
-    const track = resolveTrack(query, interaction.user);
-    player.play(track);
-    return interaction.reply({
-      content: `🔍 **Found & Queued:** [${track.title}](${track.url}) by \`${track.artist}\``
-    });
+    player.voiceChannelId = memberVoice.id;
+    player.textChannelId = interaction.channelId;
+
+    try {
+      const res = await lavalinkManager.resolve(query, interaction.user, 'ytsearch');
+      if (!res || !res.tracks || res.tracks.length === 0) {
+        return interaction.editReply({ content: `❌ No results found for \`${query}\`.` });
+      }
+      const track = res.tracks[0];
+      await player.play(track);
+      return interaction.editReply({
+        content: `🔍 **Found & Queued:** [${track.title}](${track.url}) by \`${track.artist}\` (\`${formatDuration(track.duration)}\`)`
+      });
+    } catch (err) {
+      return interaction.editReply({ content: `❌ Search error: ${err.message}` });
+    }
   }
 );
 
@@ -176,11 +268,37 @@ registerTopLevel(
     .addStringOption(opt => opt.setName('query').setDescription('Song title or URL').setRequired(true)),
   async (interaction) => {
     const query = interaction.options.getString('query');
+    const memberVoice = interaction.member?.voice?.channel;
+    if (!memberVoice) {
+      return interaction.reply({ content: '🔊 You must be in a voice channel to use `/playskip`.', ephemeral: true });
+    }
+    if (!lavalinkManager.connected) {
+      return interaction.reply({ content: '❌ Music node is currently unavailable.', ephemeral: true });
+    }
+
+    await interaction.deferReply();
+    try {
+      await voiceManager.joinVoice(memberVoice);
+    } catch (voiceErr) {
+      return interaction.editReply({ content: voiceErr.message?.startsWith('❌') ? voiceErr.message : `❌ Failed to join voice channel: ${voiceErr.message}` });
+    }
+
     const player = playerManager.getOrCreatePlayer(interaction.guildId);
-    const track = resolveTrack(query, interaction.user);
-    player.skip();
-    player.playTop(track);
-    return interaction.reply({ content: `⏭️ **Skipped & Now Playing:** [${track.title}](${track.url})` });
+    player.voiceChannelId = memberVoice.id;
+    player.textChannelId = interaction.channelId;
+
+    try {
+      const res = await lavalinkManager.resolve(query, interaction.user);
+      if (!res || !res.tracks || res.tracks.length === 0) {
+        return interaction.editReply({ content: `❌ No tracks found for \`${query}\`.` });
+      }
+      const track = res.tracks[0];
+      await player.playTop(track);
+      await player.skip();
+      return interaction.editReply({ content: `⏭️ **Skipped & Now Playing:** [${track.title}](${track.url})` });
+    } catch (err) {
+      return interaction.editReply({ content: `❌ Could not resolve track: ${err.message}` });
+    }
   }
 );
 
@@ -191,10 +309,36 @@ registerTopLevel(
     .addStringOption(opt => opt.setName('query').setDescription('Song title or URL').setRequired(true)),
   async (interaction) => {
     const query = interaction.options.getString('query');
+    const memberVoice = interaction.member?.voice?.channel;
+    if (!memberVoice) {
+      return interaction.reply({ content: '🔊 You must be in a voice channel to use `/playtop`.', ephemeral: true });
+    }
+    if (!lavalinkManager.connected) {
+      return interaction.reply({ content: '❌ Music node is currently unavailable.', ephemeral: true });
+    }
+
+    await interaction.deferReply();
+    try {
+      await voiceManager.joinVoice(memberVoice);
+    } catch (voiceErr) {
+      return interaction.editReply({ content: voiceErr.message?.startsWith('❌') ? voiceErr.message : `❌ Failed to join voice channel: ${voiceErr.message}` });
+    }
+
     const player = playerManager.getOrCreatePlayer(interaction.guildId);
-    const track = resolveTrack(query, interaction.user);
-    player.playTop(track);
-    return interaction.reply({ content: `🔝 **Added to top of queue:** [${track.title}](${track.url})` });
+    player.voiceChannelId = memberVoice.id;
+    player.textChannelId = interaction.channelId;
+
+    try {
+      const res = await lavalinkManager.resolve(query, interaction.user);
+      if (!res || !res.tracks || res.tracks.length === 0) {
+        return interaction.editReply({ content: `❌ No tracks found for \`${query}\`.` });
+      }
+      const track = res.tracks[0];
+      await player.playTop(track);
+      return interaction.editReply({ content: `🔝 **Added to top of queue:** [${track.title}](${track.url})` });
+    } catch (err) {
+      return interaction.editReply({ content: `❌ Could not resolve track: ${err.message}` });
+    }
   }
 );
 
@@ -205,10 +349,36 @@ registerTopLevel(
     .addStringOption(opt => opt.setName('query').setDescription('Song title or URL').setRequired(true)),
   async (interaction) => {
     const query = interaction.options.getString('query');
+    const memberVoice = interaction.member?.voice?.channel;
+    if (!memberVoice) {
+      return interaction.reply({ content: '🔊 You must be in a voice channel to use `/playnext`.', ephemeral: true });
+    }
+    if (!lavalinkManager.connected) {
+      return interaction.reply({ content: '❌ Music node is currently unavailable.', ephemeral: true });
+    }
+
+    await interaction.deferReply();
+    try {
+      await voiceManager.joinVoice(memberVoice);
+    } catch (voiceErr) {
+      return interaction.editReply({ content: voiceErr.message?.startsWith('❌') ? voiceErr.message : `❌ Failed to join voice channel: ${voiceErr.message}` });
+    }
+
     const player = playerManager.getOrCreatePlayer(interaction.guildId);
-    const track = resolveTrack(query, interaction.user);
-    player.playNext(track);
-    return interaction.reply({ content: `🎵 **Up Next:** [${track.title}](${track.url})` });
+    player.voiceChannelId = memberVoice.id;
+    player.textChannelId = interaction.channelId;
+
+    try {
+      const res = await lavalinkManager.resolve(query, interaction.user);
+      if (!res || !res.tracks || res.tracks.length === 0) {
+        return interaction.editReply({ content: `❌ No tracks found for \`${query}\`.` });
+      }
+      const track = res.tracks[0];
+      await player.playNext(track);
+      return interaction.editReply({ content: `🎵 **Up Next:** [${track.title}](${track.url})` });
+    } catch (err) {
+      return interaction.editReply({ content: `❌ Could not resolve track: ${err.message}` });
+    }
   }
 );
 
@@ -216,7 +386,7 @@ registerTopLevel(
   new SlashCommandBuilder().setName('pause').setDescription('Pause audio playback'),
   async (interaction) => {
     const player = playerManager.getOrCreatePlayer(interaction.guildId);
-    player.pause();
+    await player.pause();
     return interaction.reply({ content: '⏸️ Playback **Paused**.' });
   }
 );
@@ -225,7 +395,7 @@ registerTopLevel(
   new SlashCommandBuilder().setName('resume').setDescription('Resume paused audio playback'),
   async (interaction) => {
     const player = playerManager.getOrCreatePlayer(interaction.guildId);
-    player.resume();
+    await player.resume();
     return interaction.reply({ content: '▶️ Playback **Resumed**.' });
   }
 );
@@ -234,7 +404,7 @@ registerTopLevel(
   new SlashCommandBuilder().setName('skip').setDescription('Skip to the next song in the queue'),
   async (interaction) => {
     const player = playerManager.getOrCreatePlayer(interaction.guildId);
-    const nextTrack = player.skip();
+    const nextTrack = await player.skip();
     return interaction.reply({
       content: nextTrack ? `⏭️ Skipped! Now playing: **${nextTrack.title}**` : '⏹️ Queue finished. No more songs left.'
     });
@@ -249,7 +419,7 @@ registerTopLevel(
   async (interaction) => {
     const pos = interaction.options.getInteger('position');
     const player = playerManager.getOrCreatePlayer(interaction.guildId);
-    const track = player.skipTo(pos);
+    const track = await player.skipTo(pos);
     if (!track) return interaction.reply({ content: `❌ Invalid queue position \`#${pos}\`.`, ephemeral: true });
     return interaction.reply({ content: `⏭️ Skipped to \`#${pos}\`: **${track.title}**` });
   }
@@ -259,7 +429,7 @@ registerTopLevel(
   new SlashCommandBuilder().setName('previous').setDescription('Replay the previous track from history'),
   async (interaction) => {
     const player = playerManager.getOrCreatePlayer(interaction.guildId);
-    const track = player.previous();
+    const track = await player.previous();
     if (!track) return interaction.reply({ content: '❌ No previous tracks found in history.', ephemeral: true });
     return interaction.reply({ content: `⏮️ Now playing previous track: **${track.title}**` });
   }
@@ -269,7 +439,7 @@ registerTopLevel(
   new SlashCommandBuilder().setName('stop').setDescription('Stop playback, clear queue, and leave voice channel'),
   async (interaction) => {
     const player = playerManager.getOrCreatePlayer(interaction.guildId);
-    player.stop();
+    await player.stop();
     return interaction.reply({ content: '⏹️ Stopped playback and cleared queue.' });
   }
 );
@@ -278,7 +448,7 @@ registerTopLevel(
   new SlashCommandBuilder().setName('replay').setDescription('Replay current song from the beginning'),
   async (interaction) => {
     const player = playerManager.getOrCreatePlayer(interaction.guildId);
-    player.replay();
+    await player.replay();
     return interaction.reply({ content: '🔄 Replaying current track from 00:00.' });
   }
 );
@@ -548,29 +718,85 @@ registerTopLevel(
 
 registerTopLevel(
   new SlashCommandBuilder().setName('join').setDescription('Summon Neymar Music™ to your voice channel'),
-  async (interaction) => interaction.reply({ content: '🔊 Connected to your voice channel.' })
+  async (interaction) => {
+    const memberVoice = interaction.member?.voice?.channel;
+    if (!memberVoice) {
+      return interaction.reply({
+        content: '🔊 You must be in a voice channel to summon the bot.',
+        ephemeral: true
+      });
+    }
+
+    await interaction.deferReply();
+
+    try {
+      await voiceManager.joinVoice(memberVoice);
+      const player = playerManager.getOrCreatePlayer(interaction.guildId);
+      player.voiceChannelId = memberVoice.id;
+      player.textChannelId = interaction.channelId;
+
+      return interaction.editReply({
+        content: `🔊 Connected to **${memberVoice.name}** and ready to stream audio.`
+      });
+    } catch (err) {
+      return interaction.editReply({
+        content: err.message?.startsWith('❌') ? err.message : `❌ Failed to connect to voice channel: ${err.message}`
+      });
+    }
+  }
 );
 
 registerTopLevel(
   new SlashCommandBuilder().setName('leave').setDescription('Disconnect bot from voice channel'),
   async (interaction) => {
     const player = playerManager.getOrCreatePlayer(interaction.guildId);
-    player.stop();
-    return interaction.reply({ content: '👋 Disconnected from voice channel.' });
+    await player.stop();
+    const left = voiceManager.leaveVoice(interaction.guildId);
+    return interaction.reply({
+      content: left ? '👋 Disconnected from voice channel.' : 'ℹ️ The bot is not currently in a voice channel.'
+    });
   }
 );
 
 registerTopLevel(
   new SlashCommandBuilder().setName('connect').setDescription('Alias to connect to voice channel'),
-  async (interaction) => interaction.reply({ content: '🔊 Connected to voice channel.' })
+  async (interaction) => {
+    const memberVoice = interaction.member?.voice?.channel;
+    if (!memberVoice) {
+      return interaction.reply({
+        content: '🔊 You must be in a voice channel to connect the bot.',
+        ephemeral: true
+      });
+    }
+
+    await interaction.deferReply();
+
+    try {
+      await voiceManager.joinVoice(memberVoice);
+      const player = playerManager.getOrCreatePlayer(interaction.guildId);
+      player.voiceChannelId = memberVoice.id;
+      player.textChannelId = interaction.channelId;
+
+      return interaction.editReply({
+        content: `🔊 Connected to **${memberVoice.name}** and ready to stream audio.`
+      });
+    } catch (err) {
+      return interaction.editReply({
+        content: err.message?.startsWith('❌') ? err.message : `❌ Failed to connect to voice channel: ${err.message}`
+      });
+    }
+  }
 );
 
 registerTopLevel(
   new SlashCommandBuilder().setName('disconnect').setDescription('Alias to disconnect from voice channel'),
   async (interaction) => {
     const player = playerManager.getOrCreatePlayer(interaction.guildId);
-    player.stop();
-    return interaction.reply({ content: '👋 Disconnected from voice channel.' });
+    await player.stop();
+    const left = voiceManager.leaveVoice(interaction.guildId);
+    return interaction.reply({
+      content: left ? '👋 Disconnected from voice channel.' : 'ℹ️ The bot is not currently in a voice channel.'
+    });
   }
 );
 
@@ -616,10 +842,38 @@ registerTopLevel(
     },
     add: async (interaction) => {
       const query = interaction.options.getString('query');
+      const memberVoice = interaction.member?.voice?.channel;
+      if (!memberVoice) {
+        return interaction.reply({ content: '🔊 You must be in a voice channel to add songs to queue.', ephemeral: true });
+      }
+      if (!lavalinkManager.connected) {
+        return interaction.reply({ content: '❌ Music node is currently unavailable.', ephemeral: true });
+      }
+
+      await interaction.deferReply();
+      try {
+        await voiceManager.joinVoice(memberVoice);
+      } catch (voiceErr) {
+        return interaction.editReply({ content: voiceErr.message?.startsWith('❌') ? voiceErr.message : `❌ Failed to join voice channel: ${voiceErr.message}` });
+      }
+
       const player = playerManager.getOrCreatePlayer(interaction.guildId);
-      const track = resolveTrack(query, interaction.user);
-      player.play(track);
-      return interaction.reply({ content: `➕ Queued: **${track.title}** (#${player.queue.length})` });
+      player.voiceChannelId = memberVoice.id;
+      player.textChannelId = interaction.channelId;
+
+      try {
+        const res = await lavalinkManager.resolve(query, interaction.user);
+        if (!res || !res.tracks || res.tracks.length === 0) {
+          return interaction.editReply({ content: `❌ No tracks found for \`${query}\`.` });
+        }
+        const track = res.tracks[0];
+        await player.play(track);
+        return interaction.editReply({
+          content: `➕ Queued: **${track.title}** by \`${track.artist}\` (\`${formatDuration(track.duration)}\`)`
+        });
+      } catch (err) {
+        return interaction.editReply({ content: `❌ Could not resolve track: ${err.message}` });
+      }
     },
     remove: async (interaction) => {
       const pos = interaction.options.getInteger('position');
@@ -903,9 +1157,21 @@ registerTopLevel(
     add: async (interaction) => {
       const name = interaction.options.getString('name');
       const query = interaction.options.getString('query');
-      const track = resolveTrack(query, interaction.user);
-      const res = await PlaylistService.addTrack(interaction.user.id, name, track);
-      return interaction.reply({ content: res.success ? `➕ Added **${track.title}** to **${name}** (Total: ${res.count} tracks).` : `❌ ${res.message}` });
+      if (!lavalinkManager.connected) {
+        return interaction.reply({ content: '❌ Music node is currently unavailable.', ephemeral: true });
+      }
+      await interaction.deferReply();
+      try {
+        const res = await lavalinkManager.resolve(query, interaction.user);
+        if (!res || !res.tracks || res.tracks.length === 0) {
+          return interaction.editReply({ content: `❌ No tracks found for \`${query}\`.` });
+        }
+        const track = res.tracks[0];
+        const saveRes = await PlaylistService.addTrack(interaction.user.id, name, track);
+        return interaction.editReply({ content: saveRes.success ? `➕ Added **${track.title}** to **${name}** (Total: ${saveRes.count} tracks).` : `❌ ${saveRes.message}` });
+      } catch (err) {
+        return interaction.editReply({ content: `❌ Could not resolve track: ${err.message}` });
+      }
     },
     remove: async (interaction) => {
       const name = interaction.options.getString('name');
@@ -929,9 +1195,30 @@ registerTopLevel(
       const name = interaction.options.getString('name');
       const pl = PlaylistService.getPlaylist(interaction.user.id, name);
       if (!pl || pl.tracks.length === 0) return interaction.reply({ content: `❌ Playlist **${name}** is empty or not found.`, ephemeral: true });
+
+      const memberVoice = interaction.member?.voice?.channel;
+      if (!memberVoice) {
+        return interaction.reply({ content: '🔊 You must be in a voice channel to play a playlist.', ephemeral: true });
+      }
+      if (!lavalinkManager.connected) {
+        return interaction.reply({ content: '❌ Music node is currently unavailable.', ephemeral: true });
+      }
+
+      await interaction.deferReply();
+      try {
+        await voiceManager.joinVoice(memberVoice);
+      } catch (voiceErr) {
+        return interaction.editReply({ content: voiceErr.message?.startsWith('❌') ? voiceErr.message : `❌ Failed to join voice channel: ${voiceErr.message}` });
+      }
+
       const player = playerManager.getOrCreatePlayer(interaction.guildId);
-      for (const t of pl.tracks) player.play(t);
-      return interaction.reply({ content: `▶️ Queued **${pl.tracks.length}** tracks from playlist **${name}**!` });
+      player.voiceChannelId = memberVoice.id;
+      player.textChannelId = interaction.channelId;
+
+      for (const t of pl.tracks) {
+        await player.play(t);
+      }
+      return interaction.editReply({ content: `▶️ Queued **${pl.tracks.length}** tracks from playlist **${name}**!` });
     },
     list: async (interaction) => {
       const lists = PlaylistService.listPlaylists(interaction.user.id);
@@ -946,13 +1233,23 @@ registerTopLevel(
     import: async (interaction) => {
       const name = interaction.options.getString('name');
       const url = interaction.options.getString('url');
-      const pl = await PlaylistService.createPlaylist(interaction.user.id, name, `Imported from ${url}`);
-      pl.tracks.push(
-        resolveTrack('Imported Track 1', interaction.user),
-        resolveTrack('Imported Track 2', interaction.user),
-        resolveTrack('Imported Track 3', interaction.user)
-      );
-      return interaction.reply({ content: `📥 Imported 3 tracks into new playlist **${name}**!` });
+      if (!lavalinkManager.connected) {
+        return interaction.reply({ content: '❌ Music node is currently unavailable.', ephemeral: true });
+      }
+      await interaction.deferReply();
+      try {
+        const res = await lavalinkManager.resolve(url, interaction.user);
+        if (!res || !res.tracks || res.tracks.length === 0) {
+          return interaction.editReply({ content: `❌ Could not load external playlist from \`${url}\`.` });
+        }
+        const pl = await PlaylistService.createPlaylist(interaction.user.id, name, `Imported from ${url}`);
+        for (const t of res.tracks) {
+          await PlaylistService.addTrack(interaction.user.id, name, t);
+        }
+        return interaction.editReply({ content: `📥 Imported **${res.tracks.length}** tracks into new playlist **${name}**!` });
+      } catch (err) {
+        return interaction.editReply({ content: `❌ Import error: ${err.message}` });
+      }
     },
     export: async (interaction) => {
       const name = interaction.options.getString('name');
@@ -996,7 +1293,6 @@ registerTopLevel(
       const code = interaction.options.getString('code');
       const newname = interaction.options.getString('newname');
       const newPl = await PlaylistService.createPlaylist(interaction.user.id, newname, `Copied via ${code}`);
-      newPl.tracks.push(resolveTrack('Shared Cloud Track', interaction.user));
       return interaction.reply({ content: `📥 Cloned playlist as **${newname}**!` });
     }
   }

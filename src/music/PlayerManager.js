@@ -1,8 +1,13 @@
 /**
  * Neymar Music™ — Multi-Server Player Manager
  * Developer/Brand: Dark_Alise Development
- * Ensures independent audio players, queues, and filter chains per Guild.
+ * Real Audio Player Pipeline per Guild with Lavalink & Voice Synchronization
  */
+
+import { lavalinkManager } from './LavalinkManager.js';
+import { voiceManager } from './VoiceManager.js';
+import { FILTERS } from './Filters.js';
+import { formatDuration } from '../utils/formatters.js';
 
 export class Player {
   constructor(guildId) {
@@ -20,20 +25,34 @@ export class Player {
     this.pitch = 1.0;
     this.rate = 1.0;
     this.twentyFourSeven = false;
+    this.mode247 = false;
     this.autoplay = false;
     this.textChannelId = null;
     this.voiceChannelId = null;
     this.position = 0;
+    this.ping = 15;
     this.maxQueue = 500;
     this.radioMode = false;
     this.djRoleId = null;
   }
 
-  play(track) {
+  get connected() {
+    return voiceManager.isConnected(this.guildId);
+  }
+
+  /**
+   * Enqueues or starts playing a real resolved Lavalink track.
+   * @param {object} track
+   * @returns {Promise<object>}
+   */
+  async play(track) {
+    if (!track) return null;
+
     if (!this.currentTrack) {
       this.currentTrack = track;
       this.position = 0;
       this.paused = false;
+      await this.startPlayback(track);
     } else {
       if (this.queue.length >= this.maxQueue) {
         throw new Error(`Queue has reached the maximum capacity of ${this.maxQueue} tracks.`);
@@ -43,7 +62,36 @@ export class Player {
     return this.currentTrack;
   }
 
-  playNext(track) {
+  /**
+   * Starts playing a track on Lavalink node.
+   * @param {object} track
+   */
+  async startPlayback(track) {
+    if (!track) return;
+
+    console.log(`[PLAYER] Guild: ${this.guildId}`);
+    console.log(`[PLAYER] Track: ${track.title}`);
+    console.log(`[PLAYER] Source: ${track.source || 'youtube'}`);
+    console.log(`[PLAYER] Duration: ${formatDuration(track.duration || 0)}`);
+    console.log(`[PLAYER] Playback: STARTED`);
+
+    if (lavalinkManager.connected && track.encoded) {
+      try {
+        await lavalinkManager.playTrack(this.guildId, track.encoded, {
+          volume: this.volume,
+          filters: this.buildFiltersPayload()
+        });
+      } catch (err) {
+        console.error(`[PLAYER ERROR] Lavalink failed to start track in guild ${this.guildId}:`, err.message);
+      }
+    }
+  }
+
+  /**
+   * Inserts track next in queue or plays immediately.
+   * @param {object} track
+   */
+  async playNext(track) {
     if (!this.currentTrack) {
       return this.play(track);
     }
@@ -51,21 +99,44 @@ export class Player {
     return track;
   }
 
-  playTop(track) {
+  async playTop(track) {
     return this.playNext(track);
   }
 
-  pause() {
+  /**
+   * Pauses the guild player.
+   */
+  async pause() {
     this.paused = true;
+    if (lavalinkManager.connected) {
+      try {
+        await lavalinkManager.pauseTrack(this.guildId, true);
+      } catch (err) {
+        console.error(`[PLAYER ERROR] Pause failed in guild ${this.guildId}:`, err.message);
+      }
+    }
     return true;
   }
 
-  resume() {
+  /**
+   * Resumes the guild player.
+   */
+  async resume() {
     this.paused = false;
+    if (lavalinkManager.connected) {
+      try {
+        await lavalinkManager.pauseTrack(this.guildId, false);
+      } catch (err) {
+        console.error(`[PLAYER ERROR] Resume failed in guild ${this.guildId}:`, err.message);
+      }
+    }
     return true;
   }
 
-  skip() {
+  /**
+   * Skips to the next track in queue.
+   */
+  async skip() {
     if (this.currentTrack) {
       this.history.unshift({ ...this.currentTrack, finishedAt: Date.now() });
       if (this.history.length > 50) this.history.pop();
@@ -74,6 +145,7 @@ export class Player {
     if (this.loopMode === 'track' && this.currentTrack) {
       this.position = 0;
       this.paused = false;
+      await this.startPlayback(this.currentTrack);
       return this.currentTrack;
     }
 
@@ -85,27 +157,39 @@ export class Player {
       this.currentTrack = this.queue.shift();
       this.position = 0;
       this.paused = false;
+      await this.startPlayback(this.currentTrack);
     } else {
       this.currentTrack = null;
       this.position = 0;
+      if (lavalinkManager.connected) {
+        await lavalinkManager.stopTrack(this.guildId).catch(() => {});
+      }
     }
     return this.currentTrack;
   }
 
-  skipTo(position) {
+  /**
+   * Skips to specific position in queue.
+   * @param {number} position
+   */
+  async skipTo(position) {
     const idx = position - 1;
     if (idx < 0 || idx >= this.queue.length) return null;
     if (this.currentTrack) {
       this.history.unshift(this.currentTrack);
     }
-    const skipped = this.queue.splice(0, idx);
+    this.queue.splice(0, idx);
     this.currentTrack = this.queue.shift();
     this.position = 0;
     this.paused = false;
+    await this.startPlayback(this.currentTrack);
     return this.currentTrack;
   }
 
-  previous() {
+  /**
+   * Plays the previous track from history.
+   */
+  async previous() {
     if (this.history.length === 0) return null;
     const prevTrack = this.history.shift();
     if (this.currentTrack) {
@@ -114,56 +198,102 @@ export class Player {
     this.currentTrack = prevTrack;
     this.position = 0;
     this.paused = false;
+    await this.startPlayback(this.currentTrack);
     return this.currentTrack;
   }
 
-  stop() {
+  /**
+   * Stops playback and clears server queue.
+   */
+  async stop() {
     this.currentTrack = null;
     this.queue = [];
     this.paused = false;
     this.position = 0;
     this.loopMode = 'off';
     this.activeFilters.clear();
+
+    if (lavalinkManager.connected) {
+      try {
+        await lavalinkManager.stopTrack(this.guildId);
+      } catch (err) {
+        // ignore
+      }
+    }
   }
 
-  replay() {
+  /**
+   * Replays current track from start.
+   */
+  async replay() {
     this.position = 0;
     this.paused = false;
+    if (this.currentTrack) {
+      await this.startPlayback(this.currentTrack);
+    }
     return this.currentTrack;
   }
 
-  seek(seconds) {
+  /**
+   * Seeks to a seconds position in track.
+   * @param {number} seconds
+   */
+  async seek(seconds) {
     this.position = Math.max(0, Math.min(seconds * 1000, this.currentTrack?.duration || 0));
+    if (lavalinkManager.connected) {
+      try {
+        await lavalinkManager.seekTrack(this.guildId, this.position);
+      } catch (err) {
+        console.error(`[PLAYER ERROR] Seek failed in guild ${this.guildId}:`, err.message);
+      }
+    }
     return this.position;
   }
 
-  forward(seconds = 10) {
+  async forward(seconds = 10) {
     return this.seek((this.position / 1000) + seconds);
   }
 
-  rewind(seconds = 10) {
+  async rewind(seconds = 10) {
     return this.seek((this.position / 1000) - seconds);
   }
 
-  setVolume(vol) {
+  /**
+   * Sets volume level (1-200%).
+   * @param {number} vol
+   */
+  async setVolume(vol) {
     this.volume = Math.max(1, Math.min(200, vol));
     if (this.volume > 0) this.muted = false;
+    if (lavalinkManager.connected) {
+      try {
+        await lavalinkManager.setVolume(this.guildId, this.volume);
+      } catch (err) {
+        console.error(`[PLAYER ERROR] Volume change failed in guild ${this.guildId}:`, err.message);
+      }
+    }
     return this.volume;
   }
 
-  mute() {
+  async mute() {
     if (!this.muted) {
       this.previousVolume = this.volume || 100;
       this.volume = 0;
       this.muted = true;
+      if (lavalinkManager.connected) {
+        await lavalinkManager.setVolume(this.guildId, 0).catch(() => {});
+      }
     }
     return this.muted;
   }
 
-  unmute() {
+  async unmute() {
     if (this.muted) {
       this.volume = this.previousVolume || 100;
       this.muted = false;
+      if (lavalinkManager.connected) {
+        await lavalinkManager.setVolume(this.guildId, this.volume).catch(() => {});
+      }
     }
     return this.volume;
   }
@@ -227,26 +357,68 @@ export class Player {
     return track;
   }
 
-  setFilter(filterName, enabled = true) {
+  async setFilter(filterName, enabled = true) {
+    const name = filterName.toLowerCase();
     if (enabled) {
-      this.activeFilters.add(filterName.toLowerCase());
+      this.activeFilters.add(name);
     } else {
-      this.activeFilters.delete(filterName.toLowerCase());
+      this.activeFilters.delete(name);
+    }
+
+    if (lavalinkManager.connected) {
+      try {
+        await lavalinkManager.applyFilters(this.guildId, this.buildFiltersPayload());
+      } catch (err) {
+        console.error(`[PLAYER ERROR] Filter update failed in guild ${this.guildId}:`, err.message);
+      }
     }
     return Array.from(this.activeFilters);
   }
 
-  clearFilters() {
+  async clearFilters() {
     this.activeFilters.clear();
     this.speed = 1.0;
     this.pitch = 1.0;
     this.rate = 1.0;
+
+    if (lavalinkManager.connected) {
+      try {
+        await lavalinkManager.applyFilters(this.guildId, {});
+      } catch (err) {
+        // ignore
+      }
+    }
     return true;
+  }
+
+  /**
+   * Compiles active filters into Lavalink DSP JSON payload.
+   */
+  buildFiltersPayload() {
+    const payload = {};
+
+    for (const f of this.activeFilters) {
+      const config = FILTERS[f];
+      if (config) {
+        Object.assign(payload, config);
+      }
+    }
+
+    if (this.speed !== 1.0 || this.pitch !== 1.0 || this.rate !== 1.0) {
+      payload.timescale = {
+        speed: this.speed,
+        pitch: this.pitch,
+        rate: this.rate
+      };
+    }
+
+    return payload;
   }
 }
 
 export class PlayerManager {
   constructor() {
+    /** @type {Map<string, Player>} */
     this.players = new Map();
   }
 
@@ -266,10 +438,10 @@ export class PlayerManager {
     return this.players.has(String(guildId));
   }
 
-  deletePlayer(guildId) {
+  async deletePlayer(guildId) {
     const player = this.players.get(String(guildId));
     if (player) {
-      player.stop();
+      await player.stop();
       this.players.delete(String(guildId));
     }
   }
@@ -278,20 +450,72 @@ export class PlayerManager {
     return Array.from(this.players.values());
   }
 
-  executeAction(guildId, action, value) {
+  /**
+   * Automatically handles track finish/end event from Lavalink.
+   * @param {string} guildId
+   * @param {string} reason
+   */
+  async handleTrackEnd(guildId, reason) {
+    const player = this.getPlayer(guildId);
+    if (!player) return;
+
+    if (player.loopMode === 'track' && player.currentTrack) {
+      player.position = 0;
+      await player.startPlayback(player.currentTrack);
+      return;
+    }
+
+    if (player.loopMode === 'queue' && player.currentTrack) {
+      player.queue.push(player.currentTrack);
+    }
+
+    if (player.queue.length > 0) {
+      player.currentTrack = player.queue.shift();
+      player.position = 0;
+      player.paused = false;
+      await player.startPlayback(player.currentTrack);
+    } else {
+      player.currentTrack = null;
+      player.position = 0;
+
+      // Handle Autoplay if enabled
+      if (player.autoplay && lavalinkManager.connected) {
+        try {
+          const autoQuery = 'ytsearch:Top Trending Songs 2026';
+          const autoRes = await lavalinkManager.resolve(autoQuery, { id: '0', username: 'Autoplay' });
+          if (autoRes.tracks.length > 0) {
+            const nextAuto = autoRes.tracks[0];
+            player.currentTrack = nextAuto;
+            await player.startPlayback(nextAuto);
+          }
+        } catch (err) {
+          console.warn(`[PLAYER ERROR] Autoplay lookup failed in guild ${guildId}:`, err.message);
+        }
+      }
+    }
+  }
+
+  async executeAction(guildId, action, value) {
     const player = this.getOrCreatePlayer(guildId);
     switch (action) {
       case 'pauseToggle':
-        player.paused = !player.paused;
+        if (player.paused) {
+          await player.resume();
+        } else {
+          await player.pause();
+        }
         break;
       case 'skip':
-        player.skip();
+        await player.skip();
+        break;
+      case 'previous':
+        await player.previous();
         break;
       case 'stop':
-        player.stop();
+        await player.stop();
         break;
       case 'volume':
-        if (typeof value === 'number') player.setVolume(value);
+        if (typeof value === 'number') await player.setVolume(value);
         break;
       case 'loopToggle':
         player.toggleLoop(value);

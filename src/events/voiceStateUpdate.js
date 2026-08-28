@@ -4,6 +4,7 @@
  */
 
 import { playerManager } from '../music/PlayerManager.js';
+import { voiceManager } from '../music/VoiceManager.js';
 
 export const name = 'voiceStateUpdate';
 
@@ -28,7 +29,7 @@ export async function execute(oldState, newState, client) {
   const player = playerManager.getOrCreatePlayer(guildId);
 
   // Check 24/7 mode
-  if (player?.twentyFourSeven) {
+  if (player?.twentyFourSeven || player?.mode247) {
     return;
   }
 
@@ -37,12 +38,13 @@ export async function execute(oldState, newState, client) {
 
   if (humanMembers.size === 0) {
     if (!leaveTimeouts.has(guildId)) {
-      const timeout = setTimeout(() => {
+      const timeout = setTimeout(async () => {
         const currentBotVoice = oldState.guild.members.me?.voice;
         if (currentBotVoice?.channel) {
           const currentHumans = currentBotVoice.channel.members.filter(m => !m.user.bot);
           if (currentHumans.size === 0) {
-            playerManager.executeAction(guildId, 'stop');
+            await playerManager.executeAction(guildId, 'stop');
+            voiceManager.leaveVoice(guildId);
             currentBotVoice.disconnect().catch(() => {});
             console.log(`👋 [AUTO_LEAVE] Disconnected from empty voice channel in guild ${guildId}`);
           }

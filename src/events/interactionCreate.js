@@ -90,7 +90,11 @@ export async function execute(interaction, client) {
     switch (customId) {
       case 'btn_play_pause':
       case 'panel_pause_resume':
-        player.paused = !player.paused;
+        if (player.paused) {
+          await player.resume();
+        } else {
+          await player.pause();
+        }
         await interaction.reply({
           content: player.paused ? '⏸️ Playback **Paused**.' : '▶️ Playback **Resumed**.',
           ephemeral: true
@@ -99,7 +103,7 @@ export async function execute(interaction, client) {
 
       case 'btn_skip':
       case 'panel_skip':
-        playerManager.executeAction(guildId, 'skip');
+        await playerManager.executeAction(guildId, 'skip');
         await interaction.reply({
           content: '⏭️ Skipped current track to next in queue.',
           ephemeral: true
@@ -108,6 +112,7 @@ export async function execute(interaction, client) {
 
       case 'btn_previous':
       case 'panel_previous':
+        await playerManager.executeAction(guildId, 'previous');
         await interaction.reply({
           content: '⏮️ Replaying track from beginning.',
           ephemeral: true
@@ -116,7 +121,7 @@ export async function execute(interaction, client) {
 
       case 'btn_stop':
       case 'panel_stop':
-        playerManager.executeAction(guildId, 'stop');
+        await playerManager.executeAction(guildId, 'stop');
         await interaction.reply({
           content: '⏹️ Stopped playback and cleared queue.',
           ephemeral: true
@@ -125,7 +130,7 @@ export async function execute(interaction, client) {
 
       case 'btn_shuffle':
       case 'panel_shuffle':
-        playerManager.executeAction(guildId, 'shuffle');
+        await playerManager.executeAction(guildId, 'shuffle');
         await interaction.reply({
           content: '🔀 Shuffled all tracks in queue.',
           ephemeral: true
@@ -134,7 +139,7 @@ export async function execute(interaction, client) {
 
       case 'btn_loop':
       case 'panel_loop':
-        const updated = playerManager.executeAction(guildId, 'loopToggle');
+        const updated = await playerManager.executeAction(guildId, 'loopToggle');
         await interaction.reply({
           content: `🔁 Loop mode toggled to: **${updated.loopMode.toUpperCase()}**`,
           ephemeral: true
@@ -142,17 +147,19 @@ export async function execute(interaction, client) {
         break;
 
       case 'btn_vol_down':
-        player.volume = Math.max(10, (player.volume || 100) - 10);
+        const newVolDown = Math.max(10, (player.volume || 100) - 10);
+        await player.setVolume(newVolDown);
         await interaction.reply({
-          content: `🔉 Volume decreased to **${player.volume}%**`,
+          content: `🔉 Volume decreased to **${newVolDown}%**`,
           ephemeral: true
         });
         break;
 
       case 'btn_vol_up':
-        player.volume = Math.min(200, (player.volume || 100) + 10);
+        const newVolUp = Math.min(200, (player.volume || 100) + 10);
+        await player.setVolume(newVolUp);
         await interaction.reply({
-          content: `🔊 Volume increased to **${player.volume}%**`,
+          content: `🔊 Volume increased to **${newVolUp}%**`,
           ephemeral: true
         });
         break;
